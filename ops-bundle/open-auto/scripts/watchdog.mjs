@@ -23,8 +23,8 @@ const STALE_THRESHOLD_MS = 10 * 60 * 1000; // 10分钟无心跳=判定离线
 const LOG_FILE = '/opt/ai-ecom-site/data/logs/watchdog.log';
 const STATE_FILE = '/opt/ai-ecom-site/data/logs/watchdog-state.json';
 const SITE_URL = 'https://ai.openai2000.cn';
-const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY || 'sk-227c5f7e4fff49b9a60a67fa3708973e';
-const AUTO_TOKEN = process.env.AUTOMATION_TOKEN || '9a852e551372fc086a6e700ade394542e9466a17b406a908';
+const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY || '';
+const AUTO_TOKEN = process.env.AUTOMATION_TOKEN || '';
 
 mkdirSync(path.dirname(LOG_FILE), { recursive: true });
 

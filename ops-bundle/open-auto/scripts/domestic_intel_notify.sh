@@ -10,7 +10,7 @@ LOG=/opt/ai-ecom-site/data/logs/cron-domestic.log
 NOTIFY=/data/disk/notify_qq.sh
 
 export DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-"your_api_key_here"}
-export AUTOMATION_TOKEN=9a852e551372fc086a6e700ade394542e9466a17b406a908
+export AUTOMATION_TOKEN=${AUTOMATION_TOKEN:-''}
 
 BEFORE=$(wc -l < "$LOG" 2>/dev/null || echo 0)
 "$NODE" "$SCRIPT" >> "$LOG" 2>&1
