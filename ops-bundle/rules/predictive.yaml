@@ -1,0 +1,36 @@
+# 智能运维V2 — 预测性运维规则
+predictions:
+  - name: disk_full_forecast
+    metric: disk
+    check_interval: 3600
+    daily_growth_estimate: 0.5
+    warn_days: 30
+    critical_days: 7
+    auto_fix_below_days: 7
+    fix_action: "find /tmp -type f -mtime +3 -delete && find /var/log -name '*.gz' -mtime +7 -delete"
+
+  - name: ssl_expiry_forecast
+    metric: ssl
+    check_interval: 86400
+    hosts:
+      - www.ttdazi.xyz
+      - aiweb.openai2000.cn
+      - pay.openai2000.cn
+      - www.openai2000.cn
+    warn_days: 14
+    critical_days: 3
+    auto_fix_below_days: 7
+    fix_action: "sudo certbot renew --cert-name {host} --quiet"
+
+  - name: mysql_connections_forecast
+    metric: mysql_conn
+    check_interval: 1800
+    warn_percent: 70
+    critical_percent: 85
+    max_connections: 151
+
+  - name: memory_forecast
+    metric: memory
+    check_interval: 600
+    warn_percent: 85
+    critical_percent: 95

@@ -1,0 +1,33 @@
+# 资金异常检测规则
+- name: 负余额检测
+  check:
+    type: command
+    cmd: "source /opt/ttdazi/ops/.env 2>/dev/null; mysql -uroot -p\"$MYSQL_PASSWORD\" huizhiyun -N -e \"SELECT COUNT(*) FROM user WHERE balance < 0;\" 2>/dev/null"
+    threshold: 1
+    operator: ">="
+  actions:
+    - type: notify
+      severity: critical
+      message: "🏦 发现{value}个用户余额为负！"
+
+- name: 异常大额订单
+  check:
+    type: command
+    cmd: "source /opt/ttdazi/ops/.env 2>/dev/null; mysql -uroot -p\"$MYSQL_PASSWORD\" huizhiyun -N -e \"SELECT COUNT(*) FROM orders WHERE DATE(created_at)=CURDATE() AND amount>1000 AND status=2;\" 2>/dev/null"
+    threshold: 1
+    operator: ">="
+  actions:
+    - type: notify
+      severity: warn
+      message: "💳 今日有{value}笔>¥1000大额已完成订单"
+
+- name: 重复订单号检测
+  check:
+    type: command
+    cmd: "source /opt/ttdazi/ops/.env 2>/dev/null; mysql -uroot -p\"$MYSQL_PASSWORD\" huizhiyun -N -e \"SELECT COUNT(*) FROM (SELECT order_no FROM orders GROUP BY order_no HAVING COUNT(*)>1) t;\" 2>/dev/null"
+    threshold: 1
+    operator: ">="
+  actions:
+    - type: notify
+      severity: critical
+      message: "🔴 发现{value}个重复订单号！"

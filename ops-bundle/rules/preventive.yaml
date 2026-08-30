@@ -1,0 +1,11 @@
+# 预防性运维规则
+- name: 预防性运维检查
+  check:
+    type: preventive
+  actions:
+    - type: log_event
+      severity: info
+    - type: notify
+      severity: warn
+      message: "🛡️ 预防性检查发现{detail}"
+      when: on_fail

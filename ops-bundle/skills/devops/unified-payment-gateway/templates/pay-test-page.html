@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<!-- 统一支付网关 · 业务站支付测试页模板（2026-08-28 softapi pay_test 页最终版）
+     复用方法：①改 API 前缀与登录/注册/下单/列表接口路径 ②改套餐价格表 ③部署到业务后端路由返回本 HTML
+     关键坑（已踩）：weixin:// 链接禁止替换 scheme；轮询接口必须返回序列化 dict 而非 ORM 对象 -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>软件授权 · 支付测试</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'PingFang SC','Microsoft YaHei',sans-serif; background:linear-gradient(135deg,#667EEA 0%,#764BA2 100%); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+.card { background:#fff; border-radius:16px; padding:32px; width:100%; max-width:420px; box-shadow:0 20px 60px rgba(0,0,0,.25); }
+h1 { font-size:20px; color:#333; margin-bottom:6px; text-align:center; }
+.sub { text-align:center; color:#999; font-size:13px; margin-bottom:24px; }
+.field { margin-bottom:14px; }
+label { display:block; font-size:13px; color:#666; margin-bottom:6px; }
+input { width:100%; padding:11px 14px; border:1px solid #ddd; border-radius:8px; font-size:15px; outline:none; transition:border .2s; }
+input:focus { border-color:#667EEA; }
+.btn { width:100%; padding:13px; border:none; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer; transition:opacity .2s; color:#fff; background:linear-gradient(135deg,#667EEA,#764BA2); }
+.btn:hover { opacity:.9; }
+.btn:disabled { opacity:.5; cursor:not-allowed; }
+.btn2 { background:#fff; color:#667EEA; border:1px solid #667EEA; margin-top:8px; }
+.step { font-size:12px; color:#999; margin:18px 0 8px; }
+.qr-wrap { display:none; text-align:center; margin-top:16px; padding:20px; border:1px dashed #ddd; border-radius:12px; }
+.qr-wrap.show { display:block; }
+#qrcode img { width:220px; height:220px; }
+.qr-tip { font-size:13px; color:#666; margin-top:10px; }
+#status { font-size:13px; margin-top:12px; padding:10px; border-radius:8px; display:none; }
+#status.ok { background:#e8f5e9; color:#2e7d32; display:block; }
+#status.warn { background:#fff3e0; color:#e65100; display:block; }
+#status.err { background:#fbe9e7; color:#c62828; display:block; }
+.log { margin-top:14px; font-size:12px; color:#888; background:#f8f9fa; padding:10px; border-radius:8px; max-height:120px; overflow:auto; display:none; }
+.log.show { display:block; }
+.hidden { display:none; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>软件授权充值测试</h1>
+  <div class="sub">对接统一支付网关</div>
+
+  <div class="step">① 账号</div>
+  <div class="field"><input id="username" placeholder="用户名（自动注册）" value="test_user"></div>
+  <div class="field"><input id="password" type="password" placeholder="密码" value="Test@123456"></div>
+  <button class="btn" id="btnLogin">注册并登录</button>
+
+  <div class="step">② 选择套餐</div>
+  <div class="field">
+    <select id="goods" style="width:100%;padding:11px 14px;border:1px solid #ddd;border-radius:8px;font-size:15px;">
+      <option value="1">日卡 ¥9.9</option>
+      <option value="2" selected>月卡 ¥29.9</option>
+      <option value="3">年卡 ¥199.9</option>
+      <option value="4">永久 ¥520</option>
+    </select>
+  </div>
+  <button class="btn" id="btnPay" disabled>下单 · 生成支付二维码</button>
+  <button class="btn btn2 hidden" id="btnLogout">退出登录</button>
+
+  <div class="qr-wrap" id="qrWrap">
+    <div id="qrcode"></div>
+    <div class="qr-tip">📱 微信扫一扫支付</div>
+    <div class="qr-tip" style="font-size:12px;color:#bbb;">支付完成后自动检测，请稍候</div>
+    <div id="status"></div>
+  </div>
+  <div class="log" id="log"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
+<script>
+const API = '';   // 改成业务后端前缀，如 '/api'
+let token = '';
+
+function log(msg){ const el=document.getElementById('log'); el.classList.add('show'); el.innerHTML = msg + '<br>' + el.innerHTML; }
+function setStatus(text, cls){ const el=document.getElementById('status'); el.textContent=text; el.className=cls; }
+async function api(path, opts={}){
+  const headers = {'Content-Type':'application/json'};
+  if(token) headers['Authorization'] = 'Bearer '+token;
+  const r = await fetch(API+path, {...opts, headers});
+  return r.json();
+}
+
+document.getElementById('btnLogin').onclick = async () => {
+  const u = document.getElementById('username').value.trim();
+  const p = document.getElementById('password').value;
+  if(!u || !p) return alert('请填写账号密码');
+  setStatus('登录中...', 'warn');
+  let r = await api('/api/user/login', {method:'POST', body:JSON.stringify({username:u,password:p})});
+  if(r.code !== 200){
+    r = await api('/api/user/register', {method:'POST', body:JSON.stringify({username:u,password:p})});
+    if(r.code !== 200) return setStatus('注册失败: '+r.msg, 'err');
+    r = await api('/api/user/login', {method:'POST', body:JSON.stringify({username:u,password:p})});
+  }
+  token = r.data.token;
+  document.getElementById('btnPay').disabled = false;
+  document.getElementById('btnLogout').classList.remove('hidden');
+  setStatus('✅ 登录成功 token='+token.slice(0,12)+'...', 'ok');
+  log('登录成功: '+u);
+};
+
+document.getElementById('btnPay').onclick = async () => {
+  const goods = document.getElementById('goods').value;
+  setStatus('正在下单...', 'warn');
+  const r = await api('/api/recharge/create?token='+token, {method:'POST', body:JSON.stringify({pay_type:'wechat', goods_type:parseInt(goods)})});
+  if(r.code !== 200) return setStatus('下单失败: '+r.msg, 'err');
+  const { order_sn, amount, pay_url } = r.data;
+  log('订单号: '+order_sn+' 金额: ¥'+amount);
+  setStatus('⏳ 请用微信扫码支付 ¥'+amount, 'warn');
+  document.getElementById('qrWrap').classList.add('show');
+  // ⚠️ 必须用原生 weixin:// 链接直接生成二维码，禁止替换 scheme（微信只认原生链接）
+  const qrUrl = pay_url;
+  QRCode.toDataURL(qrUrl, {width:220, margin:1}, (err, url) => {
+    if(err){ log('二维码生成失败: '+err); return; }
+    const img = document.createElement('img');
+    img.src = url;
+    const wrap = document.getElementById('qrcode');
+    wrap.innerHTML = '';
+    wrap.appendChild(img);
+    log('二维码已生成');
+  });
+  pollStatus(order_sn);
+};
+
+let pollTimer;
+function pollStatus(order_sn){
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    const r = await api('/api/recharge/list?token='+token);
+    if(r.code === 200 && r.data){
+      const o = (r.data||[]).find(x => x.order_sn === order_sn);
+      if(o && o.status === 1){
+        clearInterval(pollTimer);
+        setStatus('🎉 支付成功！VIP已开通', 'ok');
+        log('✅ 支付成功 order='+order_sn);
+      }
+    }
+  }, 3000);
+}
+
+document.getElementById('btnLogout').onclick = () => {
+  token=''; document.getElementById('btnPay').disabled=true;
+  document.getElementById('btnLogout').classList.add('hidden');
+  document.getElementById('qrWrap').classList.remove('show');
+  setStatus('已退出登录', 'warn');
+};
+</script>
+</body>
+</html>

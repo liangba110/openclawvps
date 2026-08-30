@@ -1,0 +1,86 @@
+# 服务存活 + 自动重启规则
+- name: 后端存活
+  check:
+    type: http
+    url: http://127.0.0.1:5002/api/health
+    timeout: 5
+    expected_code: 200
+  actions:
+    - type: restart_systemd
+      service: ttdazi
+      cooldown: 300
+      max_retries: 3
+      on_failure: escalate
+    - type: notify
+      severity: warn
+      message: "🔄 后端已自动重启（第{count}次）"
+
+- name: 支付网关存活
+  check:
+    type: http
+    url: http://127.0.0.1:5005/pay
+    timeout: 5
+  actions:
+    - type: restart_systemd
+      service: ttdazi-pay
+      cooldown: 300
+      max_retries: 3
+      on_failure: escalate
+    - type: notify
+      severity: critical
+      message: "💳 支付网关已重启"
+
+# 安全规则
+- name: SSH爆破封禁
+  check:
+    type: command
+    cmd: "grep 'Failed password' /var/log/auth.log 2>/dev/null | grep \"$(date '+%b %d')\" | wc -l"
+    threshold: 50
+    operator: ">="
+  actions:
+    - type: notify
+      severity: warn
+      message: "🔐 SSH爆破{value}次"
+
+# 磁盘规则
+- name: 磁盘空间预警
+  check:
+    type: disk_usage
+    paths: ["/", "/data/disk"]
+    warn_threshold: 80
+    critical_threshold: 90
+  actions:
+    - type: cleanup
+      targets:
+        - pattern: "/data/disk/daily_*"
+          keep_days: 15
+        - pattern: "/var/log/*.log"
+          keep_days: 30
+      when: ">= 80%"
+      cooldown: 3600
+    - type: notify
+      severity: warn
+      message: "💾 磁盘使用{detail}"
+
+# SSL规则
+- name: SSL证书到期
+  check:
+    type: ssl
+    hosts: [www.example.com, api.example.com]
+    warn_days: 14
+  actions:
+    - type: notify
+      severity: critical
+      message: "🔒 SSL证书{detail}"
+
+# 数据库规则
+- name: MySQL碎片整理
+  check:
+    type: command
+    cmd: "mysql -uroot -p'password' db -N -e \"SELECT ROUND(DATA_FREE/(DATA_LENGTH+1)*100,1) FROM information_schema.tables WHERE TABLE_NAME='money_log';\""
+    threshold: 50
+    operator: ">"
+  actions:
+    - type: notify
+      severity: info
+      message: "🗄️ money_log碎片率{value}%"

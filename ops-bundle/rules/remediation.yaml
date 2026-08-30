@@ -1,0 +1,61 @@
+# 智能运维V2 — 自动修复规则
+rules:
+  - name: nginx_down
+    trigger: service_down
+    service: nginx
+    steps:
+      - cmd: "sudo nginx -t"
+        check: exit_code == 0
+      - cmd: "sudo systemctl restart nginx"
+        check: exit_code == 0
+      - cmd: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1"
+        check: output in ['200', '301', '302']
+    max_retries: 2
+    cooldown: 300
+    notify_on_failure: true
+
+  - name: mysql_down
+    trigger: service_down
+    service: mysql
+    steps:
+      - cmd: "sudo systemctl restart mysql"
+        check: exit_code == 0
+      - cmd: "sleep 3 && mysqladmin ping"
+        check: exit_code == 0
+    max_retries: 2
+    cooldown: 300
+    notify_on_failure: true
+
+  - name: disk_full
+    trigger: resource_alert
+    metric: disk
+    threshold: 90
+    steps:
+      - cmd: "find /tmp -type f -mtime +3 -delete"
+      - cmd: "find /var/log -name '*.gz' -mtime +7 -delete"
+      - cmd: "find /var/log -name '*.log.[0-9]*' -mtime +7 -delete"
+    cooldown: 3600
+
+  - name: high_memory
+    trigger: resource_alert
+    metric: memory
+    threshold: 90
+    steps:
+      - cmd: "sync && echo 3 > /proc/sys/vm/drop_caches"
+        requires_sudo: true
+    cooldown: 1800
+    notify: true
+
+  - name: zombie_cleanup
+    trigger: scan
+    pattern: zombie
+    steps:
+      - cmd: "ps aux | awk '$8 ~ /Z/ {print $2}' | xargs -r kill -9"
+    cooldown: 600
+
+# 修复策略
+strategy:
+  max_concurrent: 3
+  default_cooldown: 300
+  escalation_after_failures: 2
+  record_to_learning: true

@@ -1,0 +1,58 @@
+# 智能运维V2 — 服务监控规则
+rules:
+  - name: nginx
+    type: http
+    url: "http://127.0.0.1"
+    interval: 60
+    timeout: 5
+    severity: critical
+    auto_restart: true
+    restart_cmd: "sudo systemctl restart nginx"
+
+  - name: mysql
+    type: port
+    host: 127.0.0.1
+    port: 3306
+    interval: 120
+    severity: critical
+    auto_restart: true
+    restart_cmd: "sudo systemctl restart mysql"
+
+  - name: redis
+    type: port
+    host: 127.0.0.1
+    port: 6379
+    interval: 120
+    severity: high
+    auto_restart: true
+    restart_cmd: "sudo systemctl restart redis"
+
+  - name: node_backend
+    type: process
+    pattern: "node.*server"
+    interval: 60
+    severity: high
+    auto_restart: false
+
+  - name: python_backend
+    type: process
+    pattern: "python.*main.py"
+    interval: 60
+    severity: high
+    auto_restart: false
+
+# 资源阈值
+thresholds:
+  cpu: 90
+  memory: 85
+  disk: 80
+  disk_critical: 95
+  inode: 80
+  mysql_connections: 70  # 百分比
+
+# 通知渠道
+notify:
+  - channel: qq
+    levels: [critical, emergency]
+  - channel: file
+    levels: [info, warn, critical, emergency]

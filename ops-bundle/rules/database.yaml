@@ -1,0 +1,27 @@
+# 数据库维护规则
+- name: MySQL连接数检查
+  check:
+    type: command
+    cmd: "source /opt/ttdazi/ops/.env 2>/dev/null; mysql -uroot -p\"$MYSQL_PASSWORD\" -e \"SHOW STATUS LIKE 'Threads_connected';\" 2>/dev/null | tail -1 | awk '{print $2}'"
+    threshold: 100
+    operator: ">"
+  actions:
+    - type: notify
+      severity: warn
+      message: "🔗 MySQL连接数过高: {value}"
+
+- name: money_log碎片整理
+  check:
+    type: command
+    cmd: "source /opt/ttdazi/ops/.env 2>/dev/null; mysql -uroot -p\"$MYSQL_PASSWORD\" huizhiyun -e \"SELECT ROUND(DATA_FREE/(DATA_LENGTH+1)*100,1) FROM information_schema.tables WHERE TABLE_NAME='money_log';\" 2>/dev/null | tail -1"
+    threshold: 50
+    operator: ">"
+  actions:
+    - type: optimize_db
+      database: huizhiyun
+      tables: [money_log]
+      cooldown: 86400
+    - type: notify
+      severity: info
+      message: "🗄️ money_log碎片率{value}%，已自动优化"
+      when: always

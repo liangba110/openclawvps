@@ -1,0 +1,12 @@
+# 开发闭环规则 — 引擎无法修复时自动创建工单
+# 注: 由 engine.py 的 devloop 模块直接处理，此处仅做占位
+- name: 代码级问题升级
+  check:
+    type: command
+    cmd: "echo check"
+    threshold: 0
+    operator: "=="
+  actions:
+    - type: log_event
+      severity: info
+  enabled: false

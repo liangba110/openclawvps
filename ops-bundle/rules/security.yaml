@@ -1,0 +1,49 @@
+# 安全扫描规则
+- name: SSH爆破封禁
+  check:
+    type: command
+    cmd: "grep 'Failed password' /var/log/auth.log 2>/dev/null | grep \"$(date '+%b %d')\" | wc -l"
+    threshold: 50
+    operator: ">="
+  actions:
+    - type: block_ip_top
+      count: 10
+      duration: 3600
+      cooldown: 1800
+    - type: notify
+      severity: warn
+      message: "🔐 SSH爆破{value}次，已自动封禁Top IP"
+      when: always
+
+- name: 恶意进程检测
+  check:
+    type: command
+    cmd: "ps aux | grep -iE 'xmrig|minerd|kinsing|kdevtmpfsi' | grep -v grep | grep -v '\\[kdevtmpfs\\]' | wc -l"
+    threshold: 1
+    operator: ">="
+  actions:
+    - type: notify
+      severity: critical
+      message: "🏴‍☠️ 检测到恶意进程{value}个！需立即处理"
+
+- name: 磁盘空间预警
+  check:
+    type: disk_usage
+    paths: ["/", "/data/disk"]
+    warn_threshold: 80
+    critical_threshold: 90
+  actions:
+    - type: cleanup
+      targets:
+        - pattern: "/data/disk/daily_*"
+          keep_days: 15
+        - pattern: "/var/log/ttdazi_*.log"
+          keep_days: 30
+        - pattern: "/tmp/ttdazi_*"
+          keep_days: 7
+      when: ">= 80%"
+      cooldown: 3600
+    - type: notify
+      severity: warn
+      message: "💾 磁盘使用达{detail}，已自动清理"
+      when: ">= 80%"

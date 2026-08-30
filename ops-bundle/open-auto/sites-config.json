@@ -1,0 +1,14 @@
+[
+  {
+    "name": "AI电商站",
+    "url": "https://ai.openai2000.cn",
+    "pm2_name": "ai-ecom-site",
+    "expect_status": 200
+  },
+  {
+    "name": "汇智云码",
+    "url": "https://www.openai2000.cn",
+    "pm2_name": "huizhiyunma-api",
+    "expect_status": 200
+  }
+]

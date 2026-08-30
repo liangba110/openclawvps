@@ -1,0 +1,15 @@
+# SSL证书到期预警
+- name: SSL证书到期检查
+  check:
+    type: ssl
+    hosts:
+      - www.ttdazi.xyz
+      - aiweb.openai2000.cn
+      - pay.openai2000.cn
+      - www.openai2000.cn
+    warn_days: 14
+  actions:
+    - type: notify
+      severity: critical
+      message: "🔒 SSL证书将在{detail}到期！"
+      when: on_fail

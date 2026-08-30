@@ -1,0 +1,110 @@
+# 服务存活 + 自动重启规则
+- name: 同途搭子后端存活
+  check:
+    type: http
+    url: http://127.0.0.1:5002/api/health
+    timeout: 5
+    expected_code: 200
+  actions:
+    - type: restart_systemd
+      service: ttdazi
+      cooldown: 300
+      max_retries: 3
+      on_failure: escalate
+    - type: notify
+      severity: warn
+      message: "🔄 同途搭子后端已自动重启（第{count}次）"
+      when: always
+
+- name: 支付网关存活
+  check:
+    type: http
+    url: http://127.0.0.1:5005/pay
+    timeout: 5
+    expected_code: 200
+  actions:
+    - type: restart_systemd
+      service: ttdazi-pay
+      cooldown: 300
+      max_retries: 3
+      on_failure: escalate
+    - type: notify
+      severity: critical
+      message: "💳 支付网关已自动重启（第{count}次）"
+      when: always
+
+- name: AI建站存活
+  check:
+    type: http
+    url: http://127.0.0.1:5003/api/health
+    timeout: 5
+    expected_code: 200
+  actions:
+    - type: restart_systemd
+      service: aiweb
+      cooldown: 300
+      max_retries: 3
+      on_failure: escalate
+    - type: notify
+      severity: warn
+      message: "🤖 AI建站已自动重启（第{count}次）"
+      when: always
+
+- name: MySQL存活
+  check:
+    type: systemd
+    service: mysql
+  actions:
+    - type: restart_systemd
+      service: mysql
+      cooldown: 600
+      max_retries: 2
+      on_failure: escalate
+    - type: notify
+      severity: critical
+      message: "🗄️ MySQL已自动重启（第{count}次）"
+      when: always
+
+- name: Caddy存活
+  check:
+    type: systemd
+    service: caddy
+  actions:
+    - type: restart_systemd
+      service: caddy
+      cooldown: 300
+      max_retries: 3
+      on_failure: escalate
+    - type: notify
+      severity: warn
+      message: "🌐 Caddy已自动重启（第{count}次）"
+      when: always
+
+# HTTP状态码检查（服务运行但返回异常状态码）
+- name: 支付网关HTTP状态码
+  check:
+    type: command
+    cmd: "curl -sk -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:5005/pay"
+    threshold: 400
+    operator: ">="
+  actions:
+    - type: restart_systemd
+      service: ttdazi-pay
+      cooldown: 300
+    - type: notify
+      severity: warn
+      message: "💳 支付网关HTTP异常(状态码{value})，已自动重启"
+
+- name: 后端HTTP状态码
+  check:
+    type: command
+    cmd: "curl -sk -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:5002/api/health"
+    threshold: 400
+    operator: ">="
+  actions:
+    - type: restart_systemd
+      service: ttdazi
+      cooldown: 300
+    - type: notify
+      severity: warn
+      message: "🔧 后端HTTP异常(状态码{value})，已自动重启"

@@ -1,0 +1,17 @@
+# 智能异常检测规则（基于EWMA自学习基线）
+- name: 系统指标异常检测
+  check:
+    type: anomaly
+    metrics:
+      - cpu
+      - mem
+      - connections
+      - mysql_conn
+      - load
+  actions:
+    - type: log_event
+      severity: warn
+    - type: notify
+      severity: warn
+      message: "🧠 智能检测发现{detail}"
+      when: on_fail

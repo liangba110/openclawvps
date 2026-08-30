@@ -1,0 +1,36 @@
+# 智能运维V2 — 告警规则
+channels:
+  - name: file
+    type: file
+    path: data/alerts/history.jsonl
+    enabled: true
+    levels: [info, warn, critical, emergency]
+
+  - name: console
+    type: console
+    enabled: true
+    levels: [info, warn, critical, emergency]
+
+  - name: qq
+    type: qq_push
+    enabled: true
+    levels: [critical, emergency]
+    cooldown: 300
+
+# 静默规则（防止重复告警）
+suppress:
+  default_cooldown: 1800
+  by_level:
+    info: 3600
+    warn: 1800
+    critical: 600
+    emergency: 300
+
+# 升级规则
+escalation:
+  - condition: "3 failures in 1800s"
+    action: "notify_human"
+    level: critical
+  - condition: "service_down > 600s"
+    action: "escalate_to_emergency"
+    level: emergency

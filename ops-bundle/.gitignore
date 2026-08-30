@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+data/metrics.db
+state/
+logs/
+auto_tools/*.pyc
+.DS_Store
