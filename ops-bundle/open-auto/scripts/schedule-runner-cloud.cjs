@@ -7,8 +7,8 @@ const fs = require("fs");
 const path = require("path");
 
 const SITE = "https://ai.openai2000.cn";
-const TOKEN = "9a852e551372fc086a6e700ade394542e9466a17b406a908";
-const DSK = "sk-227c5f7e4fff49b9a60a67fa3708973e";
+const TOKEN = process.env.AI_ECOM_TOKEN || "";
+const DSK = process.env.DEEPSEEK_KEY || "";
 const logDir = "/opt/ai-ecom-site/data/logs";
 const articlesDir = path.join(logDir, "articles");
 fs.mkdirSync(logDir, { recursive: true });

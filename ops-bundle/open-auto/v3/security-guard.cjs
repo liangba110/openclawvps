@@ -1,189 +1,199 @@
 #!/usr/bin/env node
-'use strict';
+/* 安全自愈：监控nginx日志 → 检测攻击 → 自动封禁IP → SSL证书检查 */
+const { execSync } = require("node:child_process");
+const fs = require("fs");
+const path = require("path");
 
-/**
- * Open Auto v3 - Security Guard
- * 安全自愈模块：恶意IP检测 + 自动封禁 + SSH暴力破解防护
- */
+const LOG_DIR = "/opt/ai-ecom-site/data/logs";
+const LOG = path.join(LOG_DIR, "security-guard.log");
+const BANNED_FILE = path.join(LOG_DIR, "banned-ips.json");
+const NGINX_LOG = "/var/log/nginx/access.log";
+const FAIL2BAN = "/usr/bin/fail2ban-client";
 
-const { execSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-
-const SECURITY_DIR = '/tmp/open-auto-security';
-const BLOCKED_IPS_FILE = path.join(SECURITY_DIR, 'blocked_ips.json');
-const ATTACK_LOG_FILE = path.join(SECURITY_DIR, 'attack_log.json');
-const MAX_ATTACK_LOG = 500;
-
-const THRESHOLDS = {
-  ssh_fail_per_min: 5,
-  ssh_fail_per_hour: 20,
-  http_4xx_per_min: 50,
-  http_5xx_per_min: 10,
-  concurrent_connections: 200,
-  ban_duration_hours: 24
-};
-
-function ensureDir(dir) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+function log(m) {
+  const line = "[" + new Date().toISOString().slice(0, 19).replace("T", " ") + "] " + m;
+  console.log(line);
+  fs.appendFileSync(LOG, line + "\n");
 }
 
-function parseSSHFailures() {
-  const failures = {};
-  try {
-    const log = execSync('journalctl -u sshd --since "1 hour ago" 2>/dev/null || cat /var/log/auth.log 2>/dev/null | tail -500', { encoding: 'utf-8' });
-    for (const line of log.split('\n')) {
-      if (line.includes('Failed password') || line.includes('Invalid user')) {
-        const match = line.match(/from (\d+\.\d+\.\d+\.\d+)/);
-        if (match) failures[match[1]] = (failures[match[1]] || 0) + 1;
-      }
+function run(cmd, timeout = 15000) {
+  try { return execSync(cmd, { encoding: "utf8", timeout }).trim(); } catch { return ""; }
+}
+
+// 检测nginx日志中的异常请求
+function analyzeNginxLog() {
+  if (!fs.existsSync(NGINX_LOG)) return [];
+  // 读取最近5000行
+  const lines = run("tail -5000 " + NGINX_LOG, 20000);
+  if (!lines) return [];
+
+  const ipCounts = {};
+  const attacks = [];
+  const now = Date.now() / 1000;
+
+  for (const line of lines.split("\n")) {
+    const ip = line.split(" ")[0];
+    if (!ip || ip === "127.0.0.1" || ip === "::1") continue;
+
+    // SQL注入检测
+    if (/union\s+(all\s+)?select|or\s+1\s*=\s*1|'\s*or\s*'|drop\s+table|insert\s+into|--\s*$|\/\*|\*\//i.test(line)) {
+      attacks.push({ ip, type: "sql_injection", line: line.slice(0, 200) });
     }
-  } catch (e) {}
-  return failures;
-}
-
-function getBlockedIPs() {
-  try {
-    if (fs.existsSync(BLOCKED_IPS_FILE)) return JSON.parse(fs.readFileSync(BLOCKED_IPS_FILE, 'utf-8'));
-  } catch (e) {}
-  return {};
-}
-
-function saveBlockedIPs(blocked) {
-  ensureDir(SECURITY_DIR);
-  fs.writeFileSync(BLOCKED_IPS_FILE, JSON.stringify(blocked, null, 2));
-}
-
-function logAttack(ip, type, details) {
-  ensureDir(SECURITY_DIR);
-  let logs = [];
-  try {
-    if (fs.existsSync(ATTACK_LOG_FILE)) logs = JSON.parse(fs.readFileSync(ATTACK_LOG_FILE, 'utf-8'));
-  } catch (e) {}
-  logs.push({ ts: new Date().toISOString(), ip, type, details });
-  if (logs.length > MAX_ATTACK_LOG) logs = logs.slice(-MAX_ATTACK_LOG);
-  fs.writeFileSync(ATTACK_LOG_FILE, JSON.stringify(logs, null, 2));
-}
-
-function blockIP(ip, reason) {
-  const blocked = getBlockedIPs();
-  const now = Date.now();
-  if (blocked[ip] && blocked[ip].expires > now) return { action: 'already_blocked', ip };
-
-  const expires = now + THRESHOLDS.ban_duration_hours * 3600 * 1000;
-  try {
-    execSync(`sudo iptables -A INPUT -s ${ip} -j DROP 2>/dev/null || true`);
-    execSync(`sudo ip6tables -A INPUT -s ${ip} -j DROP 2>/dev/null || true`);
-  } catch (e) {}
-
-  blocked[ip] = { blockedAt: new Date().toISOString(), expires, reason, autoBlocked: true };
-  saveBlockedIPs(blocked);
-  logAttack(ip, 'blocked', reason);
-  return { action: 'blocked', ip, expires: new Date(expires).toISOString() };
-}
-
-function unblockIP(ip) {
-  const blocked = getBlockedIPs();
-  if (!blocked[ip]) return { action: 'not_found', ip };
-  try {
-    execSync(`sudo iptables -D INPUT -s ${ip} -j DROP 2>/dev/null || true`);
-    execSync(`sudo ip6tables -D INPUT -s ${ip} -j DROP 2>/dev/null || true`);
-  } catch (e) {}
-  delete blocked[ip];
-  saveBlockedIPs(blocked);
-  return { action: 'unblocked', ip };
-}
-
-function cleanupExpiredBlocks() {
-  const blocked = getBlockedIPs();
-  const now = Date.now();
-  let cleaned = 0;
-  for (const [ip, info] of Object.entries(blocked)) {
-    if (info.expires < now) { unblockIP(ip); cleaned++; }
-  }
-  return cleaned;
-}
-
-function getConnections() {
-  try {
-    const out = execSync('ss -s', { encoding: 'utf-8' });
-    const match = out.match(/estab\s+(\d+)/);
-    return match ? parseInt(match[1]) : 0;
-  } catch (e) { return 0; }
-}
-
-function scanAndBlock() {
-  const results = [];
-  const cleaned = cleanupExpiredBlocks();
-  if (cleaned > 0) results.push(`清理 ${cleaned} 个过期封禁`);
-
-  const sshFailures = parseSSHFailures();
-  for (const [ip, count] of Object.entries(sshFailures)) {
-    if (count >= THRESHOLDS.ssh_fail_per_hour) {
-      const result = blockIP(ip, `SSH暴力破解: ${count}次/小时`);
-      results.push(`[${result.action}] ${ip} - SSH暴力破解 ${count}次`);
+    // XSS检测
+    if (/<script|javascript:|onerror=|onload=|eval\(|document\.cookie/i.test(line)) {
+      attacks.push({ ip, type: "xss", line: line.slice(0, 200) });
+    }
+    // 路径遍历
+    if (/\.\.\/|\.\.\\|%2e%2e|%252e%252e/i.test(line)) {
+      attacks.push({ ip, type: "path_traversal", line: line.slice(0, 200) });
+    }
+    // 扫描器特征（大量404）
+    if (/ 404 /.test(line)) {
+      ipCounts[ip] = (ipCounts[ip] || 0) + 1;
     }
   }
 
-  const connections = getConnections();
-  if (connections > THRESHOLDS.concurrent_connections) {
-    results.push(`⚠️ 异常连接数: ${connections} (阈值: ${THRESHOLDS.concurrent_connections})`);
-  }
-  return results;
-}
-
-function generateReport() {
-  const lines = [];
-  lines.push('🛡️ Open Auto v3 - 安全报告');
-  lines.push(`时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
-  lines.push('');
-
-  const blocked = getBlockedIPs();
-  const activeBlocks = Object.entries(blocked).filter(([, info]) => info.expires > Date.now());
-  lines.push(`🚫 活跃封禁: ${activeBlocks.length} 个IP`);
-  for (const [ip, info] of activeBlocks.slice(0, 10)) {
-    const expires = new Date(info.expires).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-    lines.push(`  ${ip} - ${info.reason} (到期: ${expires})`);
+  // 404超过50次的IP视为扫描器
+  for (const [ip, count] of Object.entries(ipCounts)) {
+    if (count > 50) {
+      attacks.push({ ip, type: "scanner", count });
+    }
   }
 
-  const sshFailures = parseSSHFailures();
-  const failCount = Object.values(sshFailures).reduce((a, b) => a + b, 0);
-  lines.push('');
-  lines.push(`🔑 SSH失败尝试: ${failCount} 次/小时`);
-  const topAttackers = Object.entries(sshFailures).sort((a, b) => b[1] - a[1]).slice(0, 5);
-  for (const [ip, count] of topAttackers) lines.push(`  ${ip}: ${count} 次`);
-
-  const connections = getConnections();
-  lines.push('');
-  lines.push(`🔗 当前连接数: ${connections}`);
-  return lines.join('\n');
+  return attacks;
 }
 
-function main() {
-  const action = process.argv[2] || 'scan';
-  if (action === 'scan') {
-    console.log('🔍 扫描安全威胁...\n');
-    const results = scanAndBlock();
-    if (results.length > 0) results.forEach(r => console.log(r));
-    else console.log('✅ 未发现安全威胁');
-    console.log('\n' + generateReport());
-  } else if (action === 'report') {
-    console.log(generateReport());
-  } else if (action === 'block') {
-    const ip = process.argv[3];
-    const reason = process.argv[4] || '手动封禁';
-    if (!ip) { console.log('用法: security-guard.cjs block <ip> [reason]'); return; }
-    console.log(JSON.stringify(blockIP(ip, reason), null, 2));
-  } else if (action === 'unblock') {
-    const ip = process.argv[3];
-    if (!ip) { console.log('用法: security-guard.cjs unblock <ip>'); return; }
-    console.log(JSON.stringify(unblockIP(ip), null, 2));
-  } else if (action === 'list') {
-    console.log(JSON.stringify(getBlockedIPs(), null, 2));
-  } else {
-    console.log('用法: node security-guard.cjs [scan|report|block|unblock|list]');
+// 封禁IP（iptables）
+function banIP(ip) {
+  // 检查是否已封禁
+  const existing = run("iptables -L INPUT -n 2>/dev/null | grep " + ip);
+  if (existing.includes(ip)) return false;
+
+  try {
+    run("iptables -A INPUT -s " + ip + " -j DROP");
+    log("🚫 封禁IP: " + ip);
+    // 记录到文件
+    const banned = (() => { try { return JSON.parse(fs.readFileSync(BANNED_FILE, "utf8")); } catch { return []; } })();
+    banned.push({ ip, ts: new Date().toISOString(), reason: "auto-ban" });
+    while (banned.length > 200) banned.shift();
+    fs.writeFileSync(BANNED_FILE, JSON.stringify(banned, null, 2));
+    return true;
+  } catch (e) {
+    log("封禁失败 " + ip + ": " + e.message);
+    return false;
   }
 }
 
-if (require.main === module) main();
-module.exports = { scanAndBlock, blockIP, unblockIP, generateReport, getBlockedIPs };
+// 解封IP（超过24小时自动解封）
+function unbanOldIPs() {
+  const banned = (() => { try { return JSON.parse(fs.readFileSync(BANNED_FILE, "utf8")); } catch { return []; } })();
+  const now = Date.now();
+  const keep = [];
+  for (const entry of banned) {
+    const age = now - new Date(entry.ts).getTime();
+    if (age > 24 * 3600 * 1000) {
+      try { run("iptables -D INPUT -s " + entry.ip + " -j DROP"); log("✅ 解封IP: " + entry.ip); } catch {}
+    } else {
+      keep.push(entry);
+    }
+  }
+  fs.writeFileSync(BANNED_FILE, JSON.stringify(keep, null, 2));
+}
+
+// SSL证书检查
+function checkSSL() {
+  const domains = ["ai.openai2000.cn", "www.openai2000.cn", "dazi.openai2000.cn"];
+  const alerts = [];
+  for (const domain of domains) {
+    const result = run(`echo | openssl s_client -servername ${domain} -connect ${domain}:443 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null`);
+    if (!result) { alerts.push({ domain, error: "无法获取证书信息" }); continue; }
+    const match = result.match(/notAfter=(.+)/);
+    if (!match) continue;
+    const expiry = new Date(match[1]);
+    const daysLeft = Math.floor((expiry - Date.now()) / 86400000);
+    if (daysLeft < 7) {
+      alerts.push({ domain, daysLeft, expiry: match[1], severity: daysLeft < 3 ? "critical" : "high" });
+      // 尝试自动续签
+      if (daysLeft < 3) tryAutoRenew(domain);
+    }
+  }
+  return alerts;
+}
+
+function tryAutoRenew(domain) {
+  log("⚠️ SSL证书即将到期，尝试续签: " + domain);
+  try {
+    run("certbot renew --cert-name " + domain + " --quiet", 60000);
+    log("SSL续签命令已执行: " + domain);
+  } catch (e) {
+    log("SSL续签失败: " + e.message);
+  }
+}
+
+// 检查SSH暴力破解
+function checkSSHBruteForce() {
+  const authLog = run("journalctl -u sshd --since '10 min ago' --no-pager 2>/dev/null | grep 'Failed password'");
+  if (!authLog) return [];
+  const ipCounts = {};
+  for (const line of authLog.split("\n")) {
+    const m = line.match(/from (\d+\.\d+\.\d+\.\d+)/);
+    if (m) ipCounts[m[1]] = (ipCounts[m[1]] || 0) + 1;
+  }
+  const attackers = [];
+  for (const [ip, count] of Object.entries(ipCounts)) {
+    if (count > 10) {
+      attackers.push({ ip, type: "ssh_brute_force", count });
+      banIP(ip);
+    }
+  }
+  return attackers;
+}
+
+// 主流程
+try {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  const allAlerts = [];
+
+  // 1. Nginx日志分析
+  const attacks = analyzeNginxLog();
+  if (attacks.length > 0) {
+    log("⚠️ 检测到 " + attacks.length + " 条攻击");
+    // 按IP聚合去重，只封禁攻击次数>=3的IP
+    const ipAttacks = {};
+    for (const a of attacks) { ipAttacks[a.ip] = (ipAttacks[a.ip] || 0) + 1; }
+    for (const [ip, count] of Object.entries(ipAttacks)) {
+      if (count >= 3) banIP(ip);
+    }
+    allAlerts.push(...attacks);
+  }
+
+  // 2. SSH暴力破解检测
+  const sshAttacks = checkSSHBruteForce();
+  if (sshAttacks.length > 0) {
+    log("⚠️ SSH暴力破解: " + sshAttacks.length + " 个IP");
+    allAlerts.push(...sshAttacks);
+  }
+
+  // 3. 自动解封旧IP
+  unbanOldIPs();
+
+  // 4. SSL证书检查（每小时只在整点执行）
+  const minute = new Date().getMinutes();
+  if (minute < 5) {
+    const sslAlerts = checkSSL();
+    if (sslAlerts.length > 0) {
+      log("⚠️ SSL告警: " + JSON.stringify(sslAlerts));
+      allAlerts.push(...sslAlerts);
+    }
+  }
+
+  if (allAlerts.length > 0) {
+    log("总告警: " + allAlerts.length + " 条");
+    process.exit(2);
+  }
+  log("OK 无安全威胁");
+  process.exit(0);
+} catch (e) {
+  log("ERROR " + e.message);
+  process.exit(1);
+}

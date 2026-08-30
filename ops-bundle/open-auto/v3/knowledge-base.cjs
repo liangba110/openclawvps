@@ -1,266 +1,214 @@
 #!/usr/bin/env node
-'use strict';
-
-/**
- * Open Auto v3 - Knowledge Base
- * 知识库模块：故障案例归档 + LLM生成运维手册 + 经验积累
+/*
+ * 知识库：故障自动归档为案例，相似故障自动匹配历史方案，LLM生成运维手册
+ * 每天运行一次，或在 heal-orchestrator 修复后调用
  */
+const { execSync } = require("node:child_process");
+const fs = require("fs");
+const path = require("path");
+const https = require("https");
 
-const fs = require('fs');
-const path = require('path');
+const LOG_DIR = "/opt/ai-ecom-site/data/logs";
+const LOG = path.join(LOG_DIR, "knowledge-base.log");
+const KB_DIR = path.join(LOG_DIR, "knowledge-base");
+const CASES_FILE = path.join(KB_DIR, "cases.json");
+const MANUAL_FILE = path.join(KB_DIR, "ops-manual.md");
+const DEEPSEEK_KEY = process.env.DEEPSEEK_KEY || "";
 
-const KB_DIR = '/tmp/open-auto-kb';
-const CASES_FILE = path.join(KB_DIR, 'cases.json');
-const RUNBOOK_FILE = path.join(KB_DIR, 'runbook.md');
-const MAX_CASES = 500;
-
-function ensureDir(dir) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+function log(m) {
+  const line = "[" + new Date().toISOString().slice(0, 19).replace("T", " ") + "] " + m;
+  console.log(line);
+  fs.appendFileSync(LOG, line + "\n");
 }
 
+function run(cmd, timeout = 10000) {
+  try { return execSync(cmd, { encoding: "utf8", timeout }).trim(); } catch { return ""; }
+}
+
+// 加载历史案例
 function loadCases() {
-  try {
-    if (fs.existsSync(CASES_FILE)) return JSON.parse(fs.readFileSync(CASES_FILE, 'utf-8'));
-  } catch (e) {}
-  return [];
+  try { return JSON.parse(fs.readFileSync(CASES_FILE, "utf8")); } catch { return []; }
 }
 
 function saveCases(cases) {
-  ensureDir(KB_DIR);
-  if (cases.length > MAX_CASES) cases = cases.slice(-MAX_CASES);
   fs.writeFileSync(CASES_FILE, JSON.stringify(cases, null, 2));
 }
 
-function recordCase(caseData) {
-  const cases = loadCases();
-  const entry = {
-    id: Date.now().toString(36),
-    ts: new Date().toISOString(),
-    category: caseData.category || 'unknown',
-    title: caseData.title,
-    symptoms: caseData.symptoms || [],
-    rootCause: caseData.rootCause || '',
-    solution: caseData.solution || '',
-    commands: caseData.commands || [],
-    severity: caseData.severity || 'medium',
-    resolved: caseData.resolved || false,
-    tags: caseData.tags || []
-  };
-  cases.push(entry);
-  saveCases(cases);
-  return entry;
+// 从 heal-events 收集新故障
+function collectNewEvents() {
+  const eventsFile = path.join(LOG_DIR, "heal-events.json");
+  try {
+    const events = JSON.parse(fs.readFileSync(eventsFile, "utf8"));
+    // 只取最近24小时的事件
+    const cutoff = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    return events.filter(e => e.ts > cutoff && e.result);
+  } catch { return []; }
 }
 
-function searchCases(query) {
-  const cases = loadCases();
-  const q = query.toLowerCase();
-  return cases.filter(c =>
-    c.title.toLowerCase().includes(q) ||
-    c.symptoms.some(s => s.toLowerCase().includes(q)) ||
-    c.rootCause.toLowerCase().includes(q) ||
-    c.solution.toLowerCase().includes(q) ||
-    c.tags.some(t => t.toLowerCase().includes(q))
-  );
-}
-
-function getStats() {
-  const cases = loadCases();
-  const categories = {};
-  const severities = { low: 0, medium: 0, high: 0, critical: 0 };
-  let resolved = 0;
-  for (const c of cases) {
-    categories[c.category] = (categories[c.category] || 0) + 1;
-    severities[c.severity] = (severities[c.severity] || 0) + 1;
-    if (c.resolved) resolved++;
-  }
-  return { total: cases.length, resolved, unresolved: cases.length - resolved, categories, severities };
-}
-
-function generateRunbook() {
-  const cases = loadCases();
-  const lines = [];
-  lines.push('# Open Auto 运维手册');
-  lines.push(`生成时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
-  lines.push('');
-  lines.push('---');
-  lines.push('');
-
-  const grouped = {};
-  for (const c of cases) {
-    if (!grouped[c.category]) grouped[c.category] = [];
-    grouped[c.category].push(c);
-  }
-
-  for (const [category, items] of Object.entries(grouped)) {
-    lines.push(`## ${category}`);
-    lines.push('');
-    const sorted = items.sort((a, b) => {
-      const order = { critical: 0, high: 1, medium: 2, low: 3 };
-      return (order[a.severity] || 99) - (order[b.severity] || 99);
-    });
-    for (const item of sorted) {
-      lines.push(`### ${item.title}`);
-      lines.push(`- **严重程度**: ${item.severity}`);
-      lines.push(`- **状态**: ${item.resolved ? '✅ 已解决' : '❌ 未解决'}`);
-      lines.push('');
-      if (item.symptoms.length > 0) {
-        lines.push('**症状**:');
-        item.symptoms.forEach(s => lines.push(`- ${s}`));
-        lines.push('');
-      }
-      if (item.rootCause) {
-        lines.push('**根因**:');
-        lines.push(item.rootCause);
-        lines.push('');
-      }
-      if (item.solution) {
-        lines.push('**解决方案**:');
-        lines.push(item.solution);
-        lines.push('');
-      }
-      if (item.commands.length > 0) {
-        lines.push('**修复命令**:');
-        lines.push('```bash');
-        item.commands.forEach(cmd => lines.push(cmd));
-        lines.push('```');
-        lines.push('');
-      }
-      if (item.tags.length > 0) {
-        lines.push(`**标签**: ${item.tags.join(', ')}`);
-        lines.push('');
-      }
-      lines.push('---');
-      lines.push('');
-    }
-  }
-  return lines.join('\n');
-}
-
-function saveRunbook() {
-  const content = generateRunbook();
-  ensureDir(KB_DIR);
-  fs.writeFileSync(RUNBOOK_FILE, content);
-  return RUNBOOK_FILE;
-}
-
-function addPresetCases() {
-  const presets = [
-    {
-      category: '磁盘',
-      title: '磁盘空间不足导致服务异常',
-      symptoms: ['网站502错误', '数据库写入失败', '日志无法写入'],
-      rootCause: '日志文件过大、备份文件堆积、临时文件未清理',
-      solution: '清理日志、删除旧备份、清理临时文件',
-      commands: ['sudo journalctl --vacuum-time=7d', 'sudo find /tmp -type f -mtime +7 -delete', 'sudo apt-get clean'],
-      severity: 'high', resolved: true, tags: ['磁盘', '空间', '清理']
-    },
-    {
-      category: '内存',
-      title: '内存使用率过高导致OOM',
-      symptoms: ['进程被kill', '系统响应缓慢', 'OOM Killer日志'],
-      rootCause: '内存泄漏、缓存未释放、进程异常占用',
-      solution: '释放缓存、重启问题进程',
-      commands: ['sudo sync && echo 3 | sudo tee /proc/sys/vm/drop_caches', 'pm2 restart all'],
-      severity: 'high', resolved: true, tags: ['内存', 'OOM', '缓存']
-    },
-    {
-      category: 'Nginx',
-      title: 'Nginx配置错误导致502',
-      symptoms: ['网站502错误', 'Nginx启动失败'],
-      rootCause: '配置语法错误、端口冲突、证书过期',
-      solution: '检查配置、修复语法、重启服务',
-      commands: ['sudo nginx -t', 'sudo systemctl restart nginx'],
-      severity: 'critical', resolved: true, tags: ['Nginx', '502', '配置']
-    },
-    {
-      category: 'PM2',
-      title: 'PM2进程频繁崩溃',
-      symptoms: ['Node.js服务不可用', 'PM2日志显示错误'],
-      rootCause: '代码bug、依赖缺失、内存溢出',
-      solution: '检查日志、修复代码、重启服务',
-      commands: ['pm2 logs --lines 50', 'pm2 restart all', 'pm2 monit'],
-      severity: 'high', resolved: true, tags: ['PM2', 'Node.js', '崩溃']
-    },
-    {
-      category: '数据库',
-      title: 'SQLite数据库损坏',
-      symptoms: ['查询报错', '数据丢失', '数据库锁定'],
-      rootCause: '异常断电、并发写入冲突、磁盘空间不足',
-      solution: '从备份恢复、修复数据库',
-      commands: ['sqlite3 database.db "PRAGMA integrity_check;"', 'cp /data/backups/latest.db database.db'],
-      severity: 'critical', resolved: true, tags: ['SQLite', '数据库', '损坏']
-    }
+// 从日志收集错误模式
+function collectErrorPatterns() {
+  const patterns = [];
+  const logFiles = [
+    { file: path.join(LOG_DIR, "db-guard.log"), name: "数据库守护" },
+    { file: path.join(LOG_DIR, "predictive-guard.log"), name: "预测维护" },
+    { file: path.join(LOG_DIR, "security-guard.log"), name: "安全防护" },
+    { file: path.join(LOG_DIR, "heal-orchestrator.log"), name: "自愈编排" }
   ];
+  const cutoff = new Date(Date.now() - 24 * 3600 * 1000).toISOString().slice(0, 19).replace("T", " ");
 
-  let added = 0;
-  for (const preset of presets) {
-    const existing = searchCases(preset.title);
-    if (existing.length === 0) { recordCase(preset); added++; }
-  }
-  return added;
-}
-
-function generateReport() {
-  const stats = getStats();
-  const cases = loadCases();
-  const lines = [];
-  lines.push('📚 Open Auto v3 - 知识库报告');
-  lines.push(`时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
-  lines.push('');
-  lines.push('📊 统计:');
-  lines.push(`  总案例: ${stats.total}`);
-  lines.push(`  已解决: ${stats.resolved}`);
-  lines.push(`  未解决: ${stats.unresolved}`);
-  lines.push('');
-  lines.push('📂 分类:');
-  for (const [cat, count] of Object.entries(stats.categories)) lines.push(`  ${cat}: ${count}`);
-  lines.push('');
-  lines.push('⚠️ 严重程度:');
-  for (const [sev, count] of Object.entries(stats.severities)) {
-    if (count > 0) lines.push(`  ${sev}: ${count}`);
-  }
-  const recent = cases.slice(-5);
-  if (recent.length > 0) {
-    lines.push('');
-    lines.push('📋 最近案例:');
-    for (const c of recent) lines.push(`  ${c.resolved ? '✅' : '❌'} ${c.title} [${c.category}]`);
-  }
-  return lines.join('\n');
-}
-
-function main() {
-  const action = process.argv[2] || 'report';
-  if (action === 'init') {
-    console.log('初始化知识库...\n');
-    console.log(`添加 ${addPresetCases()} 个预置案例`);
-    console.log('\n' + generateReport());
-  } else if (action === 'add') {
-    const title = process.argv[3];
-    const category = process.argv[4] || '未分类';
-    if (!title) { console.log('用法: knowledge-base.cjs add "标题" [分类]'); return; }
-    const entry = recordCase({ title, category, symptoms: [], solution: '', resolved: false });
-    console.log(`✅ 已添加案例: ${entry.id}`);
-  } else if (action === 'search') {
-    const query = process.argv[3];
-    if (!query) { console.log('用法: knowledge-base.cjs search "关键词"'); return; }
-    const results = searchCases(query);
-    console.log(`找到 ${results.length} 个相关案例:\n`);
-    for (const r of results) {
-      console.log(`- ${r.title} [${r.category}]`);
-      if (r.solution) console.log(`  解决方案: ${r.solution}`);
+  for (const lf of logFiles) {
+    if (!fs.existsSync(lf.file)) continue;
+    const lines = run(`tail -200 "${lf.file}"`, 5000);
+    for (const line of lines.split("\n")) {
+      if (line.includes("ERROR") || line.includes("RESTORE") || line.includes("⚠️") || line.includes("❌")) {
+        const ts = (line.match(/\[(.+?)\]/) || [])[1] || "";
+        if (ts >= cutoff) {
+          patterns.push({ source: lf.name, line: line.slice(0, 300), ts });
+        }
+      }
     }
-  } else if (action === 'runbook') {
-    const file = saveRunbook();
-    console.log(`✅ 运维手册已生成: ${file}`);
-    console.log('\n' + generateRunbook());
-  } else if (action === 'report') {
-    console.log(generateReport());
-  } else if (action === 'list') {
-    console.log(JSON.stringify(loadCases().slice(-20), null, 2));
-  } else {
-    console.log('用法: node knowledge-base.cjs [init|add|search|runbook|report|list]');
   }
+  return patterns;
 }
 
-if (require.main === module) main();
-module.exports = { recordCase, searchCases, generateRunbook, getStats, addPresetCases };
+// 相似度匹配（简单关键词匹配）
+function findSimilarCases(newCase, existingCases) {
+  const keywords = newCase.description.split(/[\s,，。；\n]+/).filter(w => w.length > 1);
+  const matches = [];
+  for (const c of existingCases) {
+    let score = 0;
+    for (const kw of keywords) {
+      if (c.description.includes(kw)) score++;
+    }
+    if (score > 0) matches.push({ ...c, score });
+  }
+  matches.sort((a, b) => b.score - a.score);
+  return matches.slice(0, 3);
+}
+
+// LLM 生成运维手册章节
+function llmGenerate(content) {
+  return new Promise((resolve) => {
+    const body = JSON.stringify({
+      model: "deepseek-v4-flash",
+      messages: [
+        { role: "system", content: "你是运维专家。根据以下故障案例，生成简洁的中文运维手册章节。格式：### 故障现象\n### 原因分析\n### 处理步骤\n### 预防措施。每部分2-3句话，简洁实用。" },
+        { role: "user", content }
+      ],
+      temperature: 0.3,
+      max_tokens: 1500
+    });
+    const req = https.request({
+      hostname: "api.deepseek.com", port: 443, path: "/chat/completions", method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + DEEPSEEK_KEY, "Content-Length": Buffer.byteLength(body) },
+      timeout: 60000
+    }, res => {
+      let d = ""; res.setEncoding("utf8");
+      res.on("data", c => d += c);
+      res.on("end", () => {
+        try { resolve(JSON.parse(d).choices[0].message.content || ""); } catch { resolve(""); }
+      });
+    });
+    req.on("error", () => resolve(""));
+    req.on("timeout", function() { this.destroy(); resolve(""); });
+    req.write(body);
+    req.end();
+  });
+}
+
+// 生成运维手册
+async function generateManual(cases) {
+  if (cases.length === 0) return;
+  log("生成运维手册，共 " + cases.length + " 个案例...");
+
+  let manual = "# 运维手册（自动生成）\n\n";
+  manual += "> 生成时间: " + new Date().toISOString().slice(0, 19).replace("T", " ") + "\n";
+  manual += "> 案例数量: " + cases.length + "\n\n";
+
+  // 按类型分组
+  const groups = {};
+  for (const c of cases) {
+    const type = c.type || "其他";
+    if (!groups[type]) groups[type] = [];
+    groups[type].push(c);
+  }
+
+  for (const [type, items] of Object.entries(groups)) {
+    manual += "## " + type + "\n\n";
+    // 最多取最近5个同类案例生成手册
+    for (const item of items.slice(-5)) {
+      const section = await llmGenerate(
+        "故障类型: " + item.type + "\n" +
+        "描述: " + item.description + "\n" +
+        "解决方案: " + (item.fix || "未知") + "\n" +
+        "结果: " + (item.result || "未知")
+      );
+      if (section) manual += section + "\n\n";
+    }
+  }
+
+  fs.writeFileSync(MANUAL_FILE, manual);
+  log("运维手册已更新: " + MANUAL_FILE);
+}
+
+// 主流程
+(async () => {
+  try {
+    fs.mkdirSync(KB_DIR, { recursive: true });
+    const cases = loadCases();
+
+    // 1. 收集新故障事件
+    const events = collectNewEvents();
+    log("新事件: " + events.length + " 条");
+
+    for (const evt of events) {
+      // 检查是否已归档（避免重复）
+      const exists = cases.some(c => c.ts === evt.ts && c.site === evt.site);
+      if (exists) continue;
+
+      const newCase = {
+        id: cases.length + 1,
+        ts: evt.ts,
+        site: evt.site,
+        type: evt.issues.map(i => i.type).join(","),
+        description: evt.issues.map(i => i.detail).join("; "),
+        fix: evt.result === "fixed" ? "自动修复成功" : "修复失败",
+        result: evt.result,
+        attempts: evt.attempts
+      };
+
+      // 查找相似历史案例
+      const similar = findSimilarCases(newCase, cases);
+      if (similar.length > 0) {
+        newCase.similarTo = similar[0].id;
+        log("相似案例: #" + similar[0].id + " (相似度" + similar[0].score + ")");
+      }
+
+      cases.push(newCase);
+      log("归档案例 #" + newCase.id + ": " + newCase.site + " / " + newCase.type);
+    }
+
+    // 2. 收集错误模式
+    const patterns = collectErrorPatterns();
+    log("错误模式: " + patterns.length + " 条");
+
+    // 保存案例
+    saveCases(cases);
+
+    // 3. 每天生成一次运维手册（检查是否今天已生成）
+    const today = new Date().toISOString().slice(0, 10);
+    const manualDate = (() => {
+      try { return fs.readFileSync(MANUAL_FILE, "utf8").match(/生成时间: (\d{4}-\d{2}-\d{2})/)?.[1]; } catch { return ""; }
+    })();
+
+    if (manualDate !== today && cases.length > 0) {
+      await generateManual(cases);
+    }
+
+    log("OK 案例总数=" + cases.length + " 新增=" + events.length);
+    process.exit(0);
+  } catch (e) {
+    log("ERROR " + e.message);
+    process.exit(1);
+  }
+})();
